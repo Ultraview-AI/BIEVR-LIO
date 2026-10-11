@@ -1,6 +1,10 @@
 #ifndef BIEVR_LIO_PIPELINE_H_
 #define BIEVR_LIO_PIPELINE_H_
 
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <optional>
 #include <typeindex>
 
 #include "bievr_lio/bievr_map.h"
@@ -45,6 +49,17 @@ class Pipeline {
   void processFrame(const std::vector<ImuMeasurement>& imu_data,
                     const StampedIntensityPointcloud& pointcloud);
 
+  // [Ultraview/Aegis] In-place re-initialisation (in-flight re-localisation): at the next frame
+  // the map and the estimation window are cleared and the state is set to this IMU pose /
+  // world-frame velocity, valid at `stamp` (ns) and propagated to the present with the recent
+  // IMU history; biases, gravity and the world frame are kept. Returns false (with a reason) if
+  // it cannot be honoured: the pipeline is not running yet (no biases), or `stamp` is outside
+  // the IMU history (reinit_history_s). on_reinit (if set) is called when it is applied.
+  bool requestReinitialization(uint64_t stamp, const Quaternion& quat, const V3& p, const V3& v,
+                               std::string& error);
+  std::function<void(uint32_t count, uint64_t stamp)> on_reinit;
+  static constexpr double kReinitHistoryS = 5.0;
+
   template <typename T>
   void registerPublisher(std::function<void(const T&, const Header&, const std::string& topic,
                                             const std::string& child_frame)>
@@ -58,6 +73,17 @@ class Pipeline {
 
  private:
   enum class Phase { NeedBias, NeedMap, Running };
+
+  struct ReinitRequest {
+    uint64_t stamp;
+    Quaternion quat;
+    V3 p, v;
+  };
+  void applyReinitialization(const ReinitRequest& r);
+  std::mutex reinit_mutex_;
+  std::optional<ReinitRequest> reinit_request_;
+  std::deque<ImuMeasurement> recent_imu_;  // scaled, last kReinitHistoryS
+  uint32_t reinit_count_ = 0;
 
   // Pipeline helpers
   bool initializeBias(const std::vector<ImuMeasurement>& imu_data, const Pointcloud& pointcloud);

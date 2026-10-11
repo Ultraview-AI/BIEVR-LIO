@@ -10,6 +10,8 @@
 #include <rclcpp/serialization.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/u_int32.hpp>
+#include <loc_fault_detection_msgs/srv/reinitialize_slam.hpp>
 #include <string>
 
 #include "bievr_lio/config_loader.h"
@@ -97,6 +99,44 @@ int main(int argc, char** argv) {
         else {
           LOG_FIRST(W, 1, "Received unsupported pointcloud message type: " << pc_type);
         }
+      });
+
+  // [Ultraview/Aegis] In-place re-initialisation for in-flight re-localisation
+  // (docs/object_anchor.md): bievr_lio/reinitialize sets the state (same odometry frame, map
+  // cleared, biases kept) at the next frame; bievr_lio/reset_count (latched) counts the applied
+  // ones so vision_to_px4 can treat the jump as an announced reset, not a fault.
+  auto reset_pub = node->create_publisher<std_msgs::msg::UInt32>(
+      "bievr_lio/reset_count", rclcpp::QoS(1).reliable().transient_local());
+  {
+    std_msgs::msg::UInt32 zero;
+    zero.data = 0;
+    reset_pub->publish(zero);
+  }
+  pipeline->on_reinit = [&reset_pub](uint32_t count, uint64_t) {
+    std_msgs::msg::UInt32 m;
+    m.data = count;
+    reset_pub->publish(m);
+  };
+  const std::string odom_frame = config.pipeline_config.map_frame;
+  auto reinit_srv = node->create_service<loc_fault_detection_msgs::srv::ReinitializeSlam>(
+      "bievr_lio/reinitialize",
+      [&pipeline, odom_frame](
+          const std::shared_ptr<loc_fault_detection_msgs::srv::ReinitializeSlam::Request> req,
+          std::shared_ptr<loc_fault_detection_msgs::srv::ReinitializeSlam::Response> res) {
+        if (req->pose.header.frame_id != odom_frame) {
+          res->success = false;
+          res->message = "pose must be in " + odom_frame + ", got '" + req->pose.header.frame_id + "'";
+          return;
+        }
+        const auto& o = req->pose.pose.orientation;
+        const auto& p = req->pose.pose.position;
+        const uint64_t stamp = static_cast<uint64_t>(rclcpp::Time(req->pose.header.stamp).nanoseconds());
+        std::string error;
+        res->success = pipeline->requestReinitialization(
+            stamp, bievr::Quaternion(o.w, o.x, o.y, o.z), bievr::V3(p.x, p.y, p.z),
+            bievr::V3(req->velocity.x, req->velocity.y, req->velocity.z), error);
+        res->message = res->success ? "re-initialisation queued for the next frame" : error;
+        LOG(W, "Re-initialisation requested (" << req->reason << "): " << res->message);
       });
 
   auto imu_sub = node->create_subscription<sensor_msgs::msg::Imu>(

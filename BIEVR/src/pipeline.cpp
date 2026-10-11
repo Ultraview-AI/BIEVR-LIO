@@ -90,6 +90,22 @@ void Pipeline::processFrame(const std::vector<ImuMeasurement>& imu_data,
   }
   const std::vector<ImuMeasurement>& imu = *imu_ptr;
 
+  // [Ultraview/Aegis] in-flight re-initialisation: keep the IMU history, apply a pending request
+  for (const auto& m : imu) {
+    if (recent_imu_.empty() || m.stamp > recent_imu_.back().stamp) recent_imu_.push_back(m);
+  }
+  while (!recent_imu_.empty() && recent_imu_.front().stamp + sToNs(kReinitHistoryS) < recent_imu_.back().stamp) {
+    recent_imu_.pop_front();
+  }
+  {
+    std::optional<ReinitRequest> request;
+    {
+      std::lock_guard<std::mutex> lock(reinit_mutex_);
+      request.swap(reinit_request_);
+    }
+    if (request) applyReinitialization(*request);
+  }
+
   const State& x_i = states_.rbegin()->second;
   const Header header{points_filtered_L.end_stamp, static_cast<uint32_t>(x_i.id + 1),
                       config_.map_frame};
@@ -177,6 +193,78 @@ void Pipeline::processFrame(const std::vector<ImuMeasurement>& imu_data,
                    timing::Timing::GetMeanSeconds("step"), timing::Timing::GetMaxSeconds("step"),
                    n_effective_points);
   }
+}
+
+bool Pipeline::requestReinitialization(uint64_t stamp, const Quaternion& quat, const V3& p,
+                                       const V3& v, std::string& error) {
+  if (phase_ != Phase::Running) {
+    error = "BIEVR is not running yet (biases not initialised)";
+    return false;
+  }
+  if (!quat.coeffs().allFinite() || !p.allFinite() || !v.allFinite()) {
+    error = "non-finite pose or velocity";
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(reinit_mutex_);
+  reinit_request_ = ReinitRequest{stamp, quat.normalized(), p, v};
+  return true;
+}
+
+// Called at the start of a frame, before the prediction: the latest state's time t_last is where
+// this frame's IMU integration starts. The request (valid at r.stamp <= t_last) is propagated
+// from r.stamp to t_last with the IMU history, then the map and window restart from it.
+void Pipeline::applyReinitialization(const ReinitRequest& r) {
+  if (states_.empty()) return;
+  const uint64_t t_last = states_.rbegin()->first;
+  Quaternion q = r.quat;
+  V3 p = r.p, v = r.v;
+  if (r.stamp > t_last + sToNs(0.05)) {
+    LOG(W, "Re-initialisation stamped " << nsToS(r.stamp - t_last) << " s after the latest state: ignored.");
+    return;
+  }
+  if (r.stamp + sToNs(0.005) < t_last) {
+    if (recent_imu_.size() < 2 || r.stamp < recent_imu_.front().stamp) {
+      LOG(E, "Re-initialisation stamp is outside the IMU history (" << kReinitHistoryS << " s): ignored.");
+      return;
+    }
+    // IMU samples from r.stamp (interpolated) to t_last
+    std::vector<ImuMeasurement> samples;
+    for (size_t i = 1; i < recent_imu_.size(); ++i) {
+      const ImuMeasurement& a = recent_imu_[i - 1];
+      const ImuMeasurement& b = recent_imu_[i];
+      if (b.stamp <= r.stamp) continue;
+      if (samples.empty()) {
+        const double s = static_cast<double>(r.stamp - a.stamp) / std::max<uint64_t>(1, b.stamp - a.stamp);
+        ImuMeasurement first;
+        first.stamp = r.stamp;
+        first.acc = a.acc + s * (b.acc - a.acc);
+        first.gyro = a.gyro + s * (b.gyro - a.gyro);
+        samples.push_back(first);
+      }
+      if (b.stamp > t_last) break;
+      samples.push_back(b);
+    }
+    if (samples.size() >= 2) {
+      ImuIntegrator integrator(config_.imu, acc_bias_, gyro_bias_);
+      integrator.integrate(samples);
+      const V3 G = gravity_dir_ * kGMagnitude;
+      Quaternion q2;
+      V3 p2, v2;
+      integrator.predict(q, p, v, G, q2, p2, v2);
+      q = q2;
+      p = p2;
+      v = v2;
+    }
+  }
+  map_ = std::make_shared<BIEVRMap>(config_.map);
+  states_.clear();
+  imu_integrators_.clear();
+  addState(t_last, q, p, v);
+  phase_ = Phase::NeedMap;
+  ++reinit_count_;
+  LOG(W, "Re-initialised in place (#" << reinit_count_ << "): p " << p.transpose() << ", v "
+                                       << v.transpose() << "; map cleared, biases kept");
+  if (on_reinit) on_reinit(reinit_count_, t_last);
 }
 
 bool Pipeline::initializeBias(const std::vector<ImuMeasurement>& imu_data,

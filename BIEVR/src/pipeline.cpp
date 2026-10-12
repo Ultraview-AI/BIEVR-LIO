@@ -205,6 +205,22 @@ bool Pipeline::requestReinitialization(uint64_t stamp, const Quaternion& quat, c
     error = "non-finite pose or velocity";
     return false;
   }
+  // The same checks applyReinitialization makes, so a caller is told now instead of the request
+  // being dropped silently at the next frame (the ROS interface is single-threaded: states_ and
+  // recent_imu_ are not being modified while this runs)
+  if (states_.empty()) {
+    error = "no state yet";
+    return false;
+  }
+  const uint64_t t_last = states_.rbegin()->first;
+  if (stamp > t_last + sToNs(0.05)) {
+    error = "pose stamped after the latest state (" + std::to_string(nsToS(stamp - t_last)) + " s): send it again later";
+    return false;
+  }
+  if (stamp + sToNs(0.005) < t_last && (recent_imu_.size() < 2 || stamp < recent_imu_.front().stamp)) {
+    error = "pose stamped before the IMU history (" + std::to_string(kReinitHistoryS) + " s)";
+    return false;
+  }
   std::lock_guard<std::mutex> lock(reinit_mutex_);
   reinit_request_ = ReinitRequest{stamp, quat.normalized(), p, v};
   return true;

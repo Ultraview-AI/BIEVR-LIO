@@ -71,10 +71,16 @@ int main(int argc, char** argv) {
   // QoS must be compatible with the publisher. SensorDataQoS (best-effort)
   // matches most LiDAR drivers (e.g. Ouster); some drivers (e.g. Livox) publish
   // reliable — adjust here if you see no messages arriving.
-  const rclcpp::QoS sensor_qos = rclcpp::SensorDataQoS();
+  // [Ultraview/Aegis] One thread runs both callbacks and every frame is processed inside the cloud callback
+  // (~40-50 ms on the Aegis in a hangar). With SensorDataQoS' depth 5 for both: up to 5 stale clouds queued
+  // (the odometry ran a steady ~310 ms late and PX4 dropped the vision, 2026-10-29) while the IMU (~250 Hz)
+  // lost all but 5 of the ~12 samples that arrive during a frame. Clouds: newest only, so a busy frame
+  // costs rate, not latency. IMU: deep enough that nothing is lost while a frame is processed.
+  const rclcpp::QoS cloud_qos = rclcpp::SensorDataQoS().keep_last(1);
+  const rclcpp::QoS imu_qos = rclcpp::SensorDataQoS().keep_last(1000);
 
   auto pc_sub = node->create_generic_subscription(
-      pc_topic, pc_type, sensor_qos,
+      pc_topic, pc_type, cloud_qos,
       [&, pc_type](std::shared_ptr<rclcpp::SerializedMessage> serialized) {
         if (pc_type == "sensor_msgs/msg/PointCloud2") {
           sensor_msgs::msg::PointCloud2 msg;
@@ -140,7 +146,7 @@ int main(int argc, char** argv) {
       });
 
   auto imu_sub = node->create_subscription<sensor_msgs::msg::Imu>(
-      config.topic_config.imu_topic, sensor_qos, [&](const sensor_msgs::msg::Imu::SharedPtr msg) {
+      config.topic_config.imu_topic, imu_qos, [&](const sensor_msgs::msg::Imu::SharedPtr msg) {
         bievr::ImuMeasurement imu;
         if (!bievr::msgToImuMeasurement(*msg, imu)) {
           return;

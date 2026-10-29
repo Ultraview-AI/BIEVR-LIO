@@ -1,12 +1,19 @@
 #include "bievr_lio/synchronizer.h"
 
+#include <algorithm>
+
 #include "bievr_lio/log++.h"
 #include "bievr_lio/utils.h"
 
 namespace bievr {
 
+// [Ultraview/Aegis] Equal stamps are rejected too: an IMU sample at the same time as the previous one makes
+// the interpolation in synchronizeData divide by zero, and a point cloud whose end_stamp does not advance past
+// the last one queued or processed gives an integrator from a state to itself (first time == last time), whose
+// Ceres residual gets the same parameter blocks twice -> glog CHECK abort in problem_impl.cc (exit -6; 10 of 61
+// MARSim sim runs, 2026-10-29).
 bool Synchronizer::addImu(const ImuMeasurement& imu) {
-  if (!imu_queue_.empty() && imu.stamp < imu_queue_.back().stamp) {
+  if (!imu_queue_.empty() && imu.stamp <= imu_queue_.back().stamp) {
     LOG(W, "IMU measurement at " << imu.stamp << " out of order. Skipping.");
     return false;
   }
@@ -16,9 +23,10 @@ bool Synchronizer::addImu(const ImuMeasurement& imu) {
 }
 
 bool Synchronizer::addPointcloud(const StampedIntensityPointcloud& cloud) {
-  if (!point_queue_.empty() && cloud.end_stamp < point_queue_.back().end_stamp) {
-    LOG(W, "Pointcloud out of order. Time " << cloud.end_stamp << " smaller than "
-                                            << point_queue_.back().end_stamp << ". Skipping.");
+  const uint64_t last_end = point_queue_.empty() ? last_processed_end_stamp_
+                                                 : std::max(point_queue_.back().end_stamp, last_processed_end_stamp_);
+  if (cloud.end_stamp <= last_end) {
+    LOG(W, "Pointcloud end time " << cloud.end_stamp << " does not advance past " << last_end << ". Skipping.");
     return false;
   }
   point_queue_.push_back(cloud);
@@ -78,6 +86,7 @@ void Synchronizer::synchronizeData() {
   }
 
   pipeline_->processFrame(imu_data, pointcloud);
+  last_processed_end_stamp_ = t_pointcloud;
   point_queue_.pop_front();
 }
 

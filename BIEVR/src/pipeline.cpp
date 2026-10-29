@@ -381,6 +381,13 @@ bool Pipeline::addImuIntegrator(ImuIntegratorPtr imu_integrator) {
     LOG(D, "Time " << time << " does not exist in the Pipeline. Skipping.");
     return false;
   }
+  // [Ultraview/Aegis] backstop to the Synchronizer's stamp checks: an integrator must join two different
+  // states, else optimizeInertialWindow passes one state twice to AddResidualBlock and Ceres aborts
+  const uint64_t last = imu_integrator->getLastTime();
+  if (last <= time || states_.find(last) == states_.end()) {
+    LOG(W, "IMU integrator " << time << " -> " << last << " does not join two states. Skipping.");
+    return false;
+  }
 
   imu_integrators_[time] = imu_integrator;
   return true;

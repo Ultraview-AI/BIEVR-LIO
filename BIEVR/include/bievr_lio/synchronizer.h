@@ -18,6 +18,7 @@ class Synchronizer {
   void synchronizeData();
   std::deque<ImuMeasurement> imu_queue_;
   std::deque<StampedIntensityPointcloud> point_queue_;
+  uint64_t last_processed_end_stamp_ = 0;  // [Ultraview/Aegis] end_stamp of the last cloud sent to the pipeline
   std::shared_ptr<Pipeline> pipeline_;
 };
 }  // namespace bievr

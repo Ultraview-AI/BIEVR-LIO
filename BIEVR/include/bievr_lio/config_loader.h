@@ -159,10 +159,14 @@ inline void printConfigOverview(const Config& config) {
   os << "preprocess:\n";
   os << "  downsample_res_m:     " << hc.preprocess.downsample_resolution << "\n";
   os << "  informed_sampling:    " << yn(hc.preprocess.informed_sampling) << "\n";
+  os << "  informed_sample_count: " << hc.informed_sample_count << "\n";
   os << "optimization:\n";
   os << "  huber_delta:          " << hc.registration.huber_delta << "\n";
   os << "  img_residual:         " << yn(hc.registration.img_residual) << "\n";
   os << "  img_jacobian:         " << yn(hc.registration.img_jacobian) << "\n";
+  os << "  max_iterations:       " << hc.registration.max_iterations << " (lm " << hc.registration.lm_max_iterations
+     << "), epsilon rot " << hc.registration.rotation_epsilon << " trans " << hc.registration.transformation_epsilon << "\n";
+  os << "  fixed_correspondences: " << yn(hc.registration.fixed_correspondences) << "\n";
   os << "imu:\n";
   os << "  window_s:             " << hc.imu.window_length_s << "\n";
   os << "  t_init:               " << hc.imu.t_init << "\n";
@@ -237,6 +241,9 @@ inline bool loadConfigFromYaml(const std::vector<std::string>& yaml_paths, Confi
     return false;
   }
   hc.preprocess.informed_sampling = yaml.get<bool>("preprocess", "informed_sampling", false);
+  // [Ultraview/Aegis] voxels whose points are all kept for registration (the rest: one point each)
+  hc.informed_sample_count = static_cast<size_t>(
+      yaml.get<int>("preprocess", "informed_sample_count", static_cast<int>(hc.informed_sample_count)));
 
   // --- optimization ---
   if (!config_internal::getPositive(yaml, "optimization", "huber_delta", 100.,
@@ -245,6 +252,17 @@ inline bool loadConfigFromYaml(const std::vector<std::string>& yaml_paths, Confi
   }
   hc.registration.img_residual = yaml.get<bool>("optimization", "img_residual", true);
   hc.registration.img_jacobian = yaml.get<bool>("optimization", "img_jacobian", true);
+  // [Ultraview/Aegis] registration cost: Gauss-Newton/LM iterations and the convergence step (the
+  // iteration stops when the pose update is below both: rotation [rad], translation [m])
+  hc.registration.max_iterations = yaml.get<int>("optimization", "max_iterations", hc.registration.max_iterations);
+  hc.registration.lm_max_iterations =
+      yaml.get<int>("optimization", "lm_max_iterations", hc.registration.lm_max_iterations);
+  hc.registration.rotation_epsilon =
+      yaml.get<double>("optimization", "rotation_epsilon", hc.registration.rotation_epsilon);
+  hc.registration.transformation_epsilon =
+      yaml.get<double>("optimization", "transformation_epsilon", hc.registration.transformation_epsilon);
+  hc.registration.fixed_correspondences =
+      yaml.get<bool>("optimization", "fixed_correspondences", hc.registration.fixed_correspondences);
 
   // --- imu (params side: inertial window + normalization) ---
   if (!config_internal::getPositive(yaml, "imu", "window_s", 10., hc.imu.window_length_s) ||

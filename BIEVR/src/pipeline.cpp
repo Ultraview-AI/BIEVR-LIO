@@ -184,7 +184,10 @@ void Pipeline::processFrame(const std::vector<ImuMeasurement>& imu_data,
     logTUM(nsToS(points_L.end_stamp), T_W_I);
   }
 
-  if (config_.print_timing) {
+  // [Ultraview/Aegis] every 100th frame: the table is cumulative, and printing it every frame (~50 lines) slowed
+  // the live stack enough to fail a mission
+  static size_t timing_frames = 0;
+  if (config_.print_timing && ++timing_frames % 100 == 0) {
     LOG(I, "Timings:\n" << timing::Timing::Print());
   }
 

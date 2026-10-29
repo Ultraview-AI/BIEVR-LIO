@@ -7,6 +7,7 @@
 #include <tbb/parallel_reduce.h>
 
 #include "bievr_lio/log++.h"
+#include "bievr_lio/timing.h"
 #include "bievr_lio/utils.h"
 
 namespace bievr {
@@ -19,6 +20,7 @@ Transform LsqRegistration::computeTransformation(const Transform& T_W_L_init) {
   Transform x0 = T_W_L_init;
 
   skew_points_j_.resize(points_j_.size());
+  voxel_of_.assign(points_j_.size(), nullptr);
   tbb::parallel_for(tbb::blocked_range<size_t>(0, points_j_.size()),
                     [&](const tbb::blocked_range<size_t>& r) {
                       for (size_t i = r.begin(); i != r.end(); ++i) {
@@ -31,6 +33,7 @@ Transform LsqRegistration::computeTransformation(const Transform& T_W_L_init) {
   }
 
   for (int i = 0; i < config_.max_iterations && !converged_; i++) {
+    timing::Timer iter_timer("05a_iteration");  // count / frames = iterations per frame
     Transform delta;
     if (!stepLm(x0, delta)) {
       LOG(W, "lm not converged!!");
@@ -54,6 +57,7 @@ bool LsqRegistration::isConverged(const Transform& delta) const {
 
 double LsqRegistration::linearize(const Transform& T_W_L, Matrix66* H, Vector6* b) {
   const bool compute_jacobians = (H != nullptr && b != nullptr);
+  timing::Timer lin_timer(compute_jacobians ? "05b_linearize_jac" : "05c_linearize_cost");
 
   Accumulator identity_accumulator;
   identity_accumulator.huber_delta = config_.huber_delta;
@@ -64,12 +68,20 @@ double LsqRegistration::linearize(const Transform& T_W_L, Matrix66* H, Vector6* 
       [&](const tbb::blocked_range<size_t>& r, Accumulator local_acc) -> Accumulator {
         for (size_t i = r.begin(); i != r.end(); ++i) {
           Point p_W = T_W_L.linear() * points_j_[i] + T_W_L.translation();
-          size_t hash = map_.hashIndex(p_W);
-          const Voxel* voxel = map_.getVoxel(hash);
-          if (!voxel) {
-            if (!map_.nearestVoxel(p_W, hash)) continue;
-            voxel = map_.getVoxel(hash);
+          const Voxel* voxel = nullptr;
+          if (!compute_jacobians && config_.fixed_correspondences) {
+            voxel = voxel_of_[i];
             if (!voxel) continue;
+          } else {
+            if (compute_jacobians) voxel_of_[i] = nullptr;
+            size_t hash = map_.hashIndex(p_W);
+            voxel = map_.getVoxel(hash);
+            if (!voxel) {
+              if (!map_.nearestVoxel(p_W, hash)) continue;
+              voxel = map_.getVoxel(hash);
+              if (!voxel) continue;
+            }
+            if (compute_jacobians) voxel_of_[i] = voxel;
           }
 
           const double inv_size = map_.inv_px_size;

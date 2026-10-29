@@ -22,6 +22,11 @@ struct RegistrationConfig {
   bool lm_debug_print = false;
   bool img_residual = true;
   bool img_jacobian = true;
+  // [Ultraview/Aegis] the cost-only evaluations of an LM iteration reuse the voxel each point was associated
+  // with in that iteration's Jacobian linearization (as nanoGICP/fast_gicp: correspondences are updated in
+  // linearize, not in the error evaluation): no per-point hash / 26-neighbour search per trial step, and the
+  // accept/reject ratio compares the same residual set
+  bool fixed_correspondences = false;
 };
 
 inline bool getSubPixelValue(const Voxel* voxel, const double x, const double y, double& value) {
@@ -211,6 +216,7 @@ class LsqRegistration {
   std::vector<M3> skew_points_j_;
   bool converged_ = false;
   int num_effective_points_ = 0;
+  std::vector<const Voxel*> voxel_of_;  // per source point, from the last Jacobian linearization
 };
 
 }  // namespace bievr

@@ -122,6 +122,7 @@ class Pipeline {
 
   // Logging
   void logTUM(double timestamp, const Transform& pose);
+  void logDegeneracy(double stamp, const LsqRegistration& optimizer);
 
   Config config_;
   std::map<uint64_t, State> states_;
@@ -136,6 +137,8 @@ class Pipeline {
   V3 gravity_dir_ = V3(0, 0, 1);
   // Latest gyro reading, used to report the angular velocity in the odometry twist.
   V3 latest_gyro_ = V3::Zero();
+  int degenerate_dirs_ = 0;          // [Ultraview/Aegis] last frame's degenerate translation directions
+  double degeneracy_logged_ = -1e18;  // s
   // Accelerometer scale resolved during bias estimation (1 if raw, g if the IMU
   // reports gravity-normalized accelerations). Applied to all incoming IMU data.
   double imu_acc_scale_ = 1.0;

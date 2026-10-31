@@ -27,6 +27,14 @@ struct RegistrationConfig {
   // linearize, not in the error evaluation): no per-point hash / 26-neighbour search per trial step, and the
   // accept/reject ratio compares the same residual set
   bool fixed_correspondences = false;
+  // [Ultraview/Aegis] degeneracy-aware update (solution remapping, Zhang et al. ICRA 2016), on the translation only.
+  // The geometric information on translation is the mean over the effective points of n n^T (n = the voxel's plane
+  // normal, in the frame of the update; trace 1). Along its eigenvectors below this value the surfaces in view do not
+  // pin the translation, and only the bump-image gradient would move it: the update is projected out there, so the
+  // IMU prediction is kept. 0 = off (stock). Aegis 2026-10-31 (MAP=737out replay): floor-only takeoff scans with the
+  // -45 deg OS0 have ~0.005-0.01 along body x and the image term turned the climb into forward motion (3.3 m); a
+  // door wall 3 m ahead gives 0.13.
+  double degeneracy_min_info = 0.0;
 };
 
 inline bool getSubPixelValue(const Voxel* voxel, const double x, const double y, double& value) {
@@ -162,9 +170,12 @@ struct Accumulator {
   double error_sum = 0.0;
   Matrix66 H = Matrix66::Zero();
   Vector6 b = Vector6::Zero();
+  M3 H_geo_t = M3::Zero();  // [Ultraview/Aegis] geometric information on translation (normals only)
+  double w_sum = 0.0;
   double huber_delta = 0.2;  // default delta
 
-  inline void add(double r, const Row6* J) {
+  // n_t: the plane normal as seen by the translation update (the geometric part of J's translation block)
+  inline void add(double r, const Row6* J, const V3* n_t = nullptr) {
     ++count;
     double abs_r = std::abs(r);
     bool inlier = abs_r <= huber_delta;
@@ -177,6 +188,10 @@ struct Accumulator {
       H.noalias() += wJ * (*J);
       b.noalias() += wJ * r;
     }
+    if (n_t) {
+      H_geo_t.noalias() += w * (*n_t) * n_t->transpose();
+      w_sum += w;
+    }
   }
 
   inline void merge(const Accumulator& other) {
@@ -184,6 +199,8 @@ struct Accumulator {
     error_sum += other.error_sum;
     H += other.H;
     b += other.b;
+    H_geo_t += other.H_geo_t;
+    w_sum += other.w_sum;
   }
 };
 
@@ -202,10 +219,18 @@ class LsqRegistration {
   // pose). Reported on the dashboard as "Effective Points".
   int numEffectivePoints() const { return num_effective_points_; }
 
+  // [Ultraview/Aegis] degeneracy (last Jacobian linearization): the smallest eigenvalue of the geometric information on
+  // translation (0..1/3), its eigenvector (frame of the update: the IMU/body frame), and how many translation
+  // directions were projected out (0 when degeneracy_min_info is 0)
+  double minTranslationInfo() const { return min_info_; }
+  const V3& weakestDirection() const { return weakest_dir_; }
+  int numDegenerateDirections() const { return n_degenerate_; }
+
  private:
   bool isConverged(const Transform& delta) const;
 
   double linearize(const Transform& T_W_L, Matrix66* H = nullptr, Vector6* b = nullptr);
+  void updateDegeneracy(const Accumulator& total);
 
   bool stepLm(Transform& x0, Transform& delta);
 
@@ -217,6 +242,10 @@ class LsqRegistration {
   bool converged_ = false;
   int num_effective_points_ = 0;
   std::vector<const Voxel*> voxel_of_;  // per source point, from the last Jacobian linearization
+  M3 P_t_ = M3::Identity();  // projector onto the well-constrained translation directions
+  double min_info_ = 0.0;
+  V3 weakest_dir_ = V3::Zero();
+  int n_degenerate_ = 0;
 };
 
 }  // namespace bievr

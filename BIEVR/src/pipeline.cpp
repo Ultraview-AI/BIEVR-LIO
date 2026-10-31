@@ -155,6 +155,7 @@ void Pipeline::processFrame(const std::vector<ImuMeasurement>& imu_data,
   const Transform T_W_I = optimizer.computeTransformation(T_W_I_init);
   const int n_effective_points = optimizer.numEffectivePoints();
   align_timer.Stop();
+  logDegeneracy(nsToS(points_L.end_stamp), optimizer);
 
   // Transform the full cloud using the estimated pose and add it to the map
   timing::Timer map_timer("06_map");
@@ -501,6 +502,22 @@ void Pipeline::publishDebugClouds(const Pointcloud& source_filtered,
   // The undistorted cloud keeps its original point order, so the snapshotted
   // intensity row still lines up with it.
   publish(IntensityPointcloud(undistorted_cloud, intensities), body_header, "points/undistorted");
+}
+
+// [Ultraview/Aegis] one line when the registration enters or leaves a degenerate state (translation directions held at
+// the IMU prediction), and every 2 s while in it
+void Pipeline::logDegeneracy(double stamp, const LsqRegistration& optimizer) {
+  const int n = optimizer.numDegenerateDirections();
+  if (n == degenerate_dirs_ && (n == 0 || stamp - degeneracy_logged_ < 2.0)) return;
+  const V3& w = optimizer.weakestDirection();
+  if (n > 0) {
+    LOG(W, "Degenerate registration: " << n << " translation direction(s) held at the IMU prediction; weakest info "
+                                       << optimizer.minTranslationInfo() << " along (" << w.transpose() << ") [body]");
+  } else {
+    LOG(I, "Registration constrained again: weakest translation info " << optimizer.minTranslationInfo());
+  }
+  degenerate_dirs_ = n;
+  degeneracy_logged_ = stamp;
 }
 
 void Pipeline::logTUM(double timestamp, const Transform& pose) {

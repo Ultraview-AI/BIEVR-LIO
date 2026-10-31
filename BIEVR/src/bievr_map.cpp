@@ -163,6 +163,11 @@ bool BIEVRMap::updateNormal(Voxel& voxel) {
                   (static_cast<double>(voxel.num_points_) - 1.0);
 
   Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
+  // [Ultraview/Aegis] a line (one lidar ring) is not a plane: no normal yet (see Config::min_planarity)
+  if (config_.min_planarity > 0.0 &&
+      solver.eigenvalues()(1) < config_.min_planarity * solver.eigenvalues()(2)) {
+    return false;
+  }
 
   // Smallest eigenvalue -> normal
   Eigen::Vector3d normal = solver.eigenvectors().col(0);  //

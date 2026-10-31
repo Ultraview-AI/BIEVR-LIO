@@ -152,6 +152,7 @@ inline void printConfigOverview(const Config& config) {
   os << "  pixel_size_m:   " << hc.map.px_size << "\n";
   os << "  voxel_size_m:   " << hc.map.voxel_size << "\n";
   os << "  normal_tolerance_deg: " << hc.map.norm_tol_deg << "\n";
+  os << "  min_planarity:        " << hc.map.min_planarity << (hc.map.min_planarity > 0 ? "" : " (off)") << "\n";
   os << "  max_size:             " << hc.map.max_size << "\n";
   os << "  smooth:               " << yn(hc.map.smooth) << "\n";
   os << "  weighted:             " << yn(hc.map.weighted) << "\n";
@@ -167,6 +168,8 @@ inline void printConfigOverview(const Config& config) {
   os << "  max_iterations:       " << hc.registration.max_iterations << " (lm " << hc.registration.lm_max_iterations
      << "), epsilon rot " << hc.registration.rotation_epsilon << " trans " << hc.registration.transformation_epsilon << "\n";
   os << "  fixed_correspondences: " << yn(hc.registration.fixed_correspondences) << "\n";
+  os << "  degeneracy_min_info:  " << hc.registration.degeneracy_min_info
+     << (hc.registration.degeneracy_min_info > 0 ? "" : " (off)") << "\n";
   os << "imu:\n";
   os << "  window_s:             " << hc.imu.window_length_s << "\n";
   os << "  t_init:               " << hc.imu.t_init << "\n";
@@ -232,6 +235,8 @@ inline bool loadConfigFromYaml(const std::vector<std::string>& yaml_paths, Confi
   hc.map.max_size = static_cast<size_t>(max_size);
   hc.map.smooth = yaml.get<bool>("map", "smooth", false);
   hc.map.weighted = yaml.get<bool>("map", "weighted", false);
+  // [Ultraview/Aegis] see BIEVRMap::Config::min_planarity; 0 = off
+  hc.map.min_planarity = yaml.get<double>("map", "min_planarity", hc.map.min_planarity);
   // The map frame is the parent (odometry) frame for published poses/clouds.
   hc.map_frame = yaml.get<std::string>("map", "frame", hc.map_frame);
 
@@ -263,6 +268,9 @@ inline bool loadConfigFromYaml(const std::vector<std::string>& yaml_paths, Confi
       yaml.get<double>("optimization", "transformation_epsilon", hc.registration.transformation_epsilon);
   hc.registration.fixed_correspondences =
       yaml.get<bool>("optimization", "fixed_correspondences", hc.registration.fixed_correspondences);
+  // [Ultraview/Aegis] degeneracy-aware update (see RegistrationConfig::degeneracy_min_info); 0 = off
+  hc.registration.degeneracy_min_info =
+      yaml.get<double>("optimization", "degeneracy_min_info", hc.registration.degeneracy_min_info);
 
   // --- imu (params side: inertial window + normalization) ---
   if (!config_internal::getPositive(yaml, "imu", "window_s", 10., hc.imu.window_length_s) ||

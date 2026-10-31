@@ -36,6 +36,12 @@ class BIEVRMap {
     bool weighted = false;      // use range weighted update for bump image
     bool smooth = false;        // apply gaussian smoothing to bump image
     double norm_tol_deg{3.0};   // if normal changes more than this, reproject bump image
+    // [Ultraview/Aegis] a voxel gets a normal (becomes observed) only when its points span a plane: the middle
+    // eigenvalue of their covariance at least this fraction of the largest. 0 = stock (any 4 points). A lidar at rest
+    // draws each ring as a thin line across the floor; a voxel holding one line has no plane, and PCA turns the range
+    // noise into a normal perpendicular to the beam (45 deg tilted with the -45 deg Aegis OS0). Matching those false
+    // planes turned a floor-only climb into forward motion 1:1 (2026-10-31, MAP=737out replay: 3.3 m).
+    double min_planarity{0.0};
   };
 
   explicit BIEVRMap(Config config);

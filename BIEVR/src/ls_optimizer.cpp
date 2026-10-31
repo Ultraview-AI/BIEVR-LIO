@@ -4,6 +4,7 @@
 #include "bievr_lio/ls_optimizer.h"
 
 #include <tbb/enumerable_thread_specific.h>
+#include <Eigen/Eigenvalues>
 #include <tbb/parallel_reduce.h>
 
 #include "bievr_lio/log++.h"
@@ -114,7 +115,8 @@ double LsqRegistration::linearize(const Transform& T_W_L, Matrix66* H, Vector6* 
           SE3_Jac.block<3, 3>(0, 3) = R_o_j;  // d p_o / d t
           SE3_Jac.block<3, 3>(0, 0).noalias() = -R_o_j * skew_points_j_[i];
 
-          Eigen::Matrix<double, 1, 2> I_Jac;
+          // [Ultraview/Aegis] zero-initialised: with img_jacobian false it was used uninitialised (NaN pose)
+          Eigen::Matrix<double, 1, 2> I_Jac = Eigen::Matrix<double, 1, 2>::Zero();
           if (config_.img_jacobian) {
             I_Jac(0, 0) = dIdx;
             I_Jac(0, 1) = dIdy;
@@ -124,7 +126,8 @@ double LsqRegistration::linearize(const Transform& T_W_L, Matrix66* H, Vector6* 
           Row6 J = SE3_Jac.row(2) - (I_Jac * SE3_Jac.topRows<2>());
 
           const double r = p_o.z() - I;
-          local_acc.add(r, &J);
+          const V3 n_t = SE3_Jac.block<1, 3>(2, 3).transpose();  // the normal, without the image gradient
+          local_acc.add(r, &J, &n_t);
         }
 
         return local_acc;
@@ -141,9 +144,29 @@ double LsqRegistration::linearize(const Transform& T_W_L, Matrix66* H, Vector6* 
     // Remember how many points contributed correspondences in this (Jacobian)
     // linearization so the pipeline can report the effective point count.
     num_effective_points_ = total.count;
+    updateDegeneracy(total);
   }
 
   return total.error_sum;
+}
+
+// [Ultraview/Aegis] see RegistrationConfig::degeneracy_min_info
+void LsqRegistration::updateDegeneracy(const Accumulator& total) {
+  P_t_.setIdentity();
+  n_degenerate_ = 0;
+  if (total.w_sum <= 0.0) return;
+  Eigen::SelfAdjointEigenSolver<M3> es(total.H_geo_t / total.w_sum);
+  min_info_ = es.eigenvalues()(0);
+  weakest_dir_ = es.eigenvectors().col(0);
+  if (config_.degeneracy_min_info <= 0.0) return;
+  P_t_.setZero();
+  for (int k = 0; k < 3; ++k) {
+    if (es.eigenvalues()(k) < config_.degeneracy_min_info) {
+      ++n_degenerate_;
+    } else {
+      P_t_.noalias() += es.eigenvectors().col(k) * es.eigenvectors().col(k).transpose();
+    }
+  }
 }
 
 namespace {
@@ -185,6 +208,7 @@ bool LsqRegistration::stepLm(Transform& x0, Transform& delta) {
   for (int i = 0; i < config_.lm_max_iterations; i++) {
     Eigen::LDLT<Matrix66> solver(H + lm_lambda_ * Matrix66::Identity());
     Vector6 d = solver.solve(-b);
+    if (n_degenerate_ > 0) d.tail<3>() = P_t_ * d.tail<3>();  // keep the prediction along degenerate directions
     delta.setIdentity();
     delta.linear() = so3_exp(d.head<3>()).toRotationMatrix();
     delta.translation() = d.tail<3>();
